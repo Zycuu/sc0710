@@ -74,6 +74,7 @@ static void sc0710_dma_dequeue_video(struct sc0710_dma_channel *ch, struct sc071
 /* Copy the contents of an audio DMA chain into the ALSA capture path. */
 static void sc0710_dma_dequeue_audio(struct sc0710_dma_channel *ch, struct sc0710_dma_descriptor_chain *chain)
 {
+	struct sc0710_dev *dev = ch->dev;
 	struct sc0710_dma_descriptor_chain_allocation *dca = &chain->allocations[0];
 	int samplesPerChannel;
 	int stride = 16;
