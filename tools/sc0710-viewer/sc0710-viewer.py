@@ -272,8 +272,6 @@ def print_status(args: argparse.Namespace) -> None:
 
 
 def print_dmesg(lines: int) -> int:
-    result = run_status(["dmesg", "|", "tail", f"-n {lines}"], sudo=True)
-    # The shell pipe above is not interpreted by subprocess, so use sh for dmesg convenience.
     result = run_status(["sh", "-c", f"dmesg | tail -n {lines}"], sudo=True)
     if result.output:
         print(result.output.rstrip())
@@ -397,7 +395,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     workflow = parser.add_argument_group("workflow actions")
-    workflow.add_argument("--setup", action="store_true", help="Install dependencies, build the driver, and load it")
+    workflow.add_argument("--setup", action="store_true", help="Install dependencies, build the driver, and load it, then exit")
     workflow.add_argument("--install-deps", action="store_true", help="Install viewer dependencies with pacman")
     workflow.add_argument("--build-driver", action="store_true", help="Run make clean-cachyos and make cachyos")
     workflow.add_argument("--load-driver", action="store_true", help="Load sc0710.ko with sudo insmod")
@@ -464,6 +462,9 @@ def main() -> int:
         rc = load_driver(module_path, args.module_arg)
         if rc != 0:
             return rc
+        if args.setup:
+            print("Setup complete. Run without --setup to start the viewer.")
+            return 0
 
     if args.status:
         print_status(args)
