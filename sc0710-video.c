@@ -477,7 +477,7 @@ static void sc0710_stop_streaming(struct vb2_queue *q)
 
 	dprintk(1, "%s(ch#%d)\n", __func__, ch->nr);
 
-	del_timer(&ch->timeout);
+	timer_delete(&ch->timeout);
 	sc0710_dma_channels_stop(dev);
 	sc0710_return_all_buffers(ch, VB2_BUF_STATE_ERROR);
 }
