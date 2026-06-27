@@ -1,193 +1,26 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: sc0710-cachyos <local@example.invalid>
-Date: Sat, 27 Jun 2026 20:00:00 -0400
-Subject: [PATCH] audio: guard inactive PCM runtime and track ALSA periods
+# Audio runtime guard patch status
 
-This is an experimental hardening patch for the existing ALSA capture path.
-It is intended as a starting point for a fork, not as a finished upstream submission.
+This patch file was originally added as a planning artifact.
 
----
- sc0710-audio.c | 73 ++++++++++++++++++++++++++++----------------------
- sc0710.h       |  2 ++
- 2 files changed, 44 insertions(+), 31 deletions(-)
+The audio hardening work has now been applied directly to:
 
-diff --git a/sc0710.h b/sc0710.h
-index 0eaa7fc..1111111 100644
---- a/sc0710.h
-+++ b/sc0710.h
-@@ -292,6 +292,8 @@ struct sc0710_audio_dev
- 	struct snd_pcm_substream  *substream;
- 	struct  snd_card          *card;
- 	snd_pcm_uframes_t          buffer_ptr;
-+	snd_pcm_uframes_t          period_ptr;
-+	bool                       capturing;
- };
- 
- struct sc0710_dev {
-diff --git a/sc0710-audio.c b/sc0710-audio.c
-index ef64cec..2222222 100644
---- a/sc0710-audio.c
-+++ b/sc0710-audio.c
-@@ -38,7 +38,8 @@ int sc0710_audio_deliver_samples(struct sc0710_dev *dev, struct sc0710_dma_chann
- 	struct snd_pcm_substream *substream;
- 	struct snd_pcm_runtime *runtime;
- 	u8 *ptr = (u8 *)buf;
- 	u8 *dst;
-+	bool elapsed = false;
- 	int i;
- 	
- 	if (channels != 2)
-@@ -50,29 +51,25 @@ int sc0710_audio_deliver_samples(struct sc0710_dev *dev, struct sc0710_dma_chann
- 
- 	chip = ch->audio_dev;
- 	if (!chip) {
--		printk("%s() audio chip is NULL \n", __func__);
--		return -1;
-+		return 0;
-+	}
-+	if (!chip->capturing) {
-+		return 0;
- 	}
- 
- 	substream = chip->substream;
- 	if (!substream) {
--		printk("%s() audio capture substream is NULL\n", __func__);
--		return -1;
-+		return 0;
- 	}
- 
- 	runtime = substream->runtime;
- 	if (!runtime) {
--		printk("%s() audio capture runtime is NULL\n", __func__);
--		return -1;
-+		return 0;
- 	}
- 	if (!runtime->dma_area) {
--		printk("%s() audio capture runtime->dma_area is NULL\n", __func__);
--		return -1;
-+		return 0;
- 	}
- 	if (!runtime->buffer_size) {
--		printk("%s() audio capture runtime->buffer_size is zero\n", __func__);
--		return -1;
-+		return 0;
- 	}
-@@ -89,18 +86,22 @@ int sc0710_audio_deliver_samples(struct sc0710_dev *dev, struct sc0710_dma_chann
- 	 * Push only L1/R1 into the sound system.
- 	 */
- 
--	dst = (u8 *)runtime->dma_area + (chip->buffer_ptr * 4);
-+	if (chip->buffer_ptr >= runtime->buffer_size)
-+		chip->buffer_ptr = 0;
-+	dst = (u8 *)runtime->dma_area + frames_to_bytes(runtime, chip->buffer_ptr);
- 
- 	for (i = 0; i < samplesPerChannel; i++) {
- 
- 		/* Make sure we can fit a left and right sample in. */
--		if (chip->buffer_ptr == runtime->buffer_size) {
-+		if (chip->buffer_ptr >= runtime->buffer_size) {
- 			dst = (u8 *)runtime->dma_area;
- 			chip->buffer_ptr = 0;
- 		} else
- 		if (chip->buffer_ptr + 1 > runtime->buffer_size) {
--			printk("%s() overflow\n", __func__);
--			return -1;
-+			return -EPIPE;
- 		}
-@@ -118,13 +119,16 @@ int sc0710_audio_deliver_samples(struct sc0710_dev *dev, struct sc0710_dma_chann
- 
- 		ptr += strideBytes;
- 		chip->buffer_ptr++;
-+		chip->period_ptr++;
-+		if (runtime->period_size && chip->period_ptr >= runtime->period_size) {
-+			chip->period_ptr = 0;
-+			elapsed = true;
-+		}
- 	}
- 
--	//snd_pcm_stream_lock(substream);
--	//snd_pcm_stream_unlock(substream);
--
--	snd_pcm_period_elapsed(substream);
-+	if (elapsed)
-+		snd_pcm_period_elapsed(substream);
- 
- 	return 0; /* Success */
- }
-@@ -178,12 +182,12 @@ static int snd_sc0710_pcm_close(struct snd_pcm_substream *substream)
- 
- 	dprintk(1, "%s()\n", __func__);
- 
--	/* Stop the hardware */
-+	chip->capturing = false;
-+	chip->substream = NULL;
- 
- 	return 0;
- }
-@@ -190,26 +194,16 @@ static int snd_sc0710_hw_capture_params(struct snd_pcm_substream *substream,
- 	struct sc0710_audio_dev *chip = snd_pcm_substream_chip(substream);
- 	struct snd_pcm_runtime *runtime = substream->runtime;
- 	struct sc0710_dev *dev = chip->dev;
--	int size;
-+	int size = params_buffer_bytes(hw_params);
- 
--	size = params_buffer_bytes(hw_params);
- 	dprintk(1, "%s() buffer_bytes %d\n", __func__, size);
- 
--	if (runtime->dma_area) {
--		if (runtime->dma_bytes > size)
--			return 0;
--		kfree(runtime->dma_area);
--	}
--	runtime->dma_area = kzalloc(size, GFP_KERNEL);
--	if (!runtime->dma_area)
--		return -ENOMEM;
--	else
--		runtime->dma_bytes = size;
--
--	return 0; /* Success */
-+	return snd_pcm_lib_malloc_pages(substream, size);
- }
-@@ -221,9 +215,7 @@ static int snd_sc0710_hw_capture_free(struct snd_pcm_substream *substream)
- 	dprintk(1, "%s() rate = %d\n", __func__, substream->runtime->rate);
- 
--	/* Stop the stream */
--
--	return 0;
-+	return snd_pcm_lib_free_pages(substream);
- }
-@@ -234,6 +226,7 @@ static int snd_sc0710_prepare(struct snd_pcm_substream *substream)
- 	dprintk(1, "%s() requested rate = %d\n", __func__, substream->runtime->rate);
- 
- 	chip->buffer_ptr = 0;
-+	chip->period_ptr = 0;
- 
- 	if (substream->runtime->rate != 48000) {
-@@ -255,12 +248,18 @@ static int snd_sc0710_capture_trigger(struct snd_pcm_substream *substream, int cm
- 
- 	switch (cmd) {
- 	case SNDRV_PCM_TRIGGER_START:
--		/* Start h/w */
-+	case SNDRV_PCM_TRIGGER_RESUME:
-+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-+		chip->capturing = true;
- 		return 0;
- 
- 	case SNDRV_PCM_TRIGGER_STOP:
--		/* Stop h/w */
-+	case SNDRV_PCM_TRIGGER_SUSPEND:
-+	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
-+		chip->capturing = false;
- 		return 0;
- 
- 	default:
-@@ -351,6 +350,8 @@ int sc0710_audio_register(struct sc0710_dev *dev)
- 	chip->card = card;
- 	chip->dev = dev;
- 	chip->buffer_ptr = 0;
-+	chip->period_ptr = 0;
-+	chip->capturing = false;
- 
- 	err = snd_sc0710_pcm(chip, 0, "sc0710 HDMI");
--- 
-2.50.0
+```text
+sc0710-audio.c
+```
+
+Do not apply this file with `git am`.
+
+## Applied direction
+
+The applied code now:
+
+- Tracks whether ALSA capture is actively running.
+- Silently ignores DMA audio delivery when no PCM capture stream is active.
+- Avoids noisy kernel log spam for inactive, missing, or not yet prepared PCM runtime state.
+- Tracks ALSA period boundaries before calling `snd_pcm_period_elapsed()`.
+- Uses `vzalloc()` and `vfree()` for the PCM DMA area so the existing `.page` callback can use `vmalloc_to_page()` safely.
+- Resets capture state on close, hardware free, stop, suspend, and pause.
+
+## Why this is a note instead of a patch now
+
+The original patch proposal modified `sc0710.h`. The applied implementation keeps the public audio device structure unchanged and stores the new capture state in `sc0710-audio.c` static per-board arrays. That keeps the audio patch smaller while the larger videobuf2 port is still pending.
