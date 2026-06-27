@@ -1,5 +1,20 @@
 # Initial videobuf2 port status
 
+## Current status
+
+The module now builds on CachyOS with the `make cachyos` target.
+
+Observed successful build result:
+
+```text
+LD [M]  sc0710.o
+MODPOST Module.symvers
+CC [M]  sc0710.mod.o
+CC [M]  .module-common.o
+LD [M]  sc0710.ko
+BTF [M] sc0710.ko
+```
+
 ## What changed
 
 The first compile focused videobuf2 port has been applied directly to the driver.
@@ -12,9 +27,9 @@ Touched files:
 
 ## Intent
 
-The intent of this pass is to move the build past the old V4L video buffer API blocker.
+The intent of this pass was to move the build past the old V4L video buffer API blocker.
 
-It is not yet considered hardware safe or production ready.
+It is still not considered hardware safe or production ready until load and capture tests pass.
 
 ## Main changes
 
@@ -24,19 +39,29 @@ It is not yet considered hardware safe or production ready.
 
 `sc0710-dma-channel.c` now dequeues a driver owned `sc0710_buffer`, gets the user facing plane, copies the completed DMA chain into that plane, sets payload and timestamp, and completes the buffer through vb2.
 
-## Expected next test
+## Next test phase
+
+The next phase is cautious module load testing.
+
+Do not test capture yet. First confirm:
+
+- module loads without a kernel fault
+- module unloads cleanly
+- expected device nodes appear
+- dmesg does not report DMA, V4L2, ALSA, or PCI errors during load and unload
+
+## Load test commands
 
 From the repo root on CachyOS:
 
 ```bash
-git pull
-git switch cachyos-driver-foundation
-make clean-cachyos
-make cachyos
+sudo dmesg -C
+sudo insmod ./sc0710.ko thread_dma_poll_interval_ms=2 dma_status=0
+sleep 3
+dmesg | tail -n 120
+lsmod | grep sc0710
+v4l2-ctl --list-devices
+arecord -l
+sudo rmmod sc0710
+dmesg | tail -n 120
 ```
-
-## Expected result
-
-This may still fail. That is acceptable.
-
-The next compiler output will determine whether the remaining issues are API naming changes, missing vb2 helper declarations, struct field changes, or deeper driver logic problems.
