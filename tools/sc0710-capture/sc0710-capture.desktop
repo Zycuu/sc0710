@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=sc0710 Capture Helper
+Comment=Record or preview Elgato 4K60 Pro Mk.2 capture via sc0710
+Exec=sc0710-capture list
+Terminal=true
+Categories=AudioVideo;Video;Recorder;
