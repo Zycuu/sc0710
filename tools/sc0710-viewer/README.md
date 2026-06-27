@@ -1,67 +1,121 @@
 # sc0710 viewer
 
-`sc0710-viewer.py` is a small GStreamer based viewer app for the sc0710 driver.
+`sc0710-viewer.py` is a small GStreamer based viewer and workflow helper for the sc0710 driver.
 
 It does not require OBS.
 
 It is meant to:
 
+- build the driver on CachyOS
+- load and unload `sc0710.ko`
 - display the Elgato V4L2 video node, usually `/dev/video0`
 - play the sc0710 HDMI ALSA capture device, usually `hw:0,0`
-- provide a simple test app while the driver is being validated
+- show status and device detection output without needing several copy paste blocks
 
-## Dependencies
-
-On CachyOS or another Arch based distribution, install the needed user space tools and GStreamer plugins if they are missing:
-
-```bash
-sudo pacman -S --needed python gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad v4l-utils alsa-utils
-```
-
-## Load the driver first
+## Pull the latest app
 
 From the repo root:
 
 ```bash
-sudo insmod ./sc0710.ko thread_dma_poll_interval_ms=2 dma_status=0
+git pull
 ```
 
-If the module is already loaded, `insmod` may print `File exists`. That means the module is already present.
+## One command setup
 
-## List detected devices
+This installs the user space dependencies, builds the driver, and loads the module:
 
 ```bash
-python tools/sc0710-viewer/sc0710-viewer.py --list
+python tools/sc0710-viewer/sc0710-viewer.py --setup
 ```
 
-Expected devices look like this:
+The setup action runs these kinds of actions for you:
 
-```text
-Video device: /dev/video0
-Audio device: hw:0,0
-```
+- `sudo pacman -S --needed ...`
+- `make clean-cachyos`
+- `make cachyos`
+- `sudo insmod ./sc0710.ko thread_dma_poll_interval_ms=2 dma_status=0`
 
-## Start the viewer
+If the module is already loaded, the app will say so and keep going.
 
-Start with automatic device detection:
+## Normal use
+
+Most of the time, after setup, use:
 
 ```bash
 python tools/sc0710-viewer/sc0710-viewer.py
 ```
 
-If you want to request a specific mode:
+The app will automatically load the driver first if it is not already loaded.
 
-```bash
-python tools/sc0710-viewer/sc0710-viewer.py --width 1920 --height 1080 --framerate 60
-```
-
-If you want video only:
+## Video only
 
 ```bash
 python tools/sc0710-viewer/sc0710-viewer.py --no-audio
 ```
 
-If detection chooses the wrong devices, specify them directly:
+## Request a capture mode
+
+```bash
+python tools/sc0710-viewer/sc0710-viewer.py --width 1920 --height 1080 --framerate 60
+```
+
+## Status and device listing
+
+Show module status, dependency status, detected V4L2 devices, and detected ALSA capture devices:
+
+```bash
+python tools/sc0710-viewer/sc0710-viewer.py --status
+```
+
+Only list detected devices:
+
+```bash
+python tools/sc0710-viewer/sc0710-viewer.py --list
+```
+
+Show recent kernel logs:
+
+```bash
+python tools/sc0710-viewer/sc0710-viewer.py --dmesg
+```
+
+## Driver actions
+
+Build the driver:
+
+```bash
+python tools/sc0710-viewer/sc0710-viewer.py --build-driver
+```
+
+Load the driver:
+
+```bash
+python tools/sc0710-viewer/sc0710-viewer.py --load-driver
+```
+
+Unload the driver:
+
+```bash
+python tools/sc0710-viewer/sc0710-viewer.py --unload-driver
+```
+
+If unload fails because PipeWire or WirePlumber is probing `/dev/video0`, use safe unload:
+
+```bash
+python tools/sc0710-viewer/sc0710-viewer.py --safe-unload
+```
+
+Safe unload stops `wireplumber`, `pipewire`, and `pipewire-pulse`, unloads `sc0710`, then restarts those services.
+
+Reload the driver:
+
+```bash
+python tools/sc0710-viewer/sc0710-viewer.py --safe-reload
+```
+
+## Manual device selection
+
+If automatic detection chooses the wrong devices:
 
 ```bash
 python tools/sc0710-viewer/sc0710-viewer.py --video-device /dev/video0 --audio-device hw:0,0
@@ -79,7 +133,7 @@ Press `Ctrl+C` in the terminal that launched it.
 
 ## Current limitations
 
-This is a first pass validation app. It intentionally keeps the pipeline simple.
+This is still a first pass validation app. It intentionally keeps the media pipeline simple.
 
 It does not yet include:
 
@@ -88,6 +142,6 @@ It does not yet include:
 - latency controls
 - resolution dropdowns
 - audio device dropdowns
-- automatic driver load and unload
+- a persistent installed desktop launcher
 
 Those can be added after the driver proves stable during basic capture tests.
