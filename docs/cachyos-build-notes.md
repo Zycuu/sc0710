@@ -1,12 +1,12 @@
 # CachyOS build notes
 
-## First observed failure
-
-System:
+## Test system
 
 ```text
 /lib/modules/7.0.11-1-cachyos/build
 ```
+
+## First observed failure
 
 The first build failure was:
 
@@ -24,13 +24,11 @@ gcc: error: unrecognized command-line option '-mllvm'
 gcc: error: unrecognized command-line option '-improved-fs-discriminator=true'
 ```
 
-## Meaning
+### Meaning
 
-This is a toolchain mismatch. CachyOS built the running kernel with Clang, but the external module build tried to use GCC. The kernel build directory exports compiler flags that are valid for Clang and LLVM, so GCC fails before the driver source is meaningfully compiled.
+This was a toolchain mismatch. CachyOS built the running kernel with Clang, but the external module build tried to use GCC. The kernel build directory exports compiler flags that are valid for Clang and LLVM, so GCC fails before the driver source is meaningfully compiled.
 
-This does not yet prove that the driver works or fails on CachyOS. It only means the build never reached the real driver compatibility problems.
-
-## Fix added in this fork branch
+### Fix added in this fork branch
 
 The Makefile now supports these targets:
 
@@ -47,7 +45,36 @@ Equivalent manual command:
 make KBUILD_FLAGS="LLVM=1"
 ```
 
-## Next test command
+## Second observed failure
+
+After rebuilding with `LLVM=1`, the build reached the real source compatibility issue:
+
+```text
+CC [M]  sc0710-cards.o
+In file included from sc0710-cards.c:21:
+./sc0710.h:54:10: fatal error: 'media/videobuf-vmalloc.h' file not found
+   54 | #include <media/videobuf-vmalloc.h>
+      |          ^~~~~~
+1 error generated.
+```
+
+### Meaning
+
+This confirms the current CachyOS kernel headers do not provide the legacy `videobuf-vmalloc` interface used by the driver.
+
+This is not a missing user package in the normal sense. The driver source depends on an old V4L buffer API that needs to be ported to videobuf2.
+
+## Current next step
+
+See:
+
+```text
+docs/videobuf2-port-plan.md
+```
+
+The next code branch should replace the legacy videobuf capture path with videobuf2 callbacks and helpers.
+
+## Next test command after the port starts
 
 From the repo root:
 
@@ -57,7 +84,3 @@ git switch cachyos-driver-foundation
 make clean-cachyos
 make cachyos
 ```
-
-## Expected next phase
-
-After the Clang versus GCC mismatch is resolved, the next likely failures will probably come from driver source compatibility with modern kernel APIs. Based on earlier source review, the video path still uses older `videobuf` calls in active paths, so the next main repair area is expected to be the V4L2 buffer handling path.
