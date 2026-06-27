@@ -477,7 +477,7 @@ static void sc0710_stop_streaming(struct vb2_queue *q)
 
 	dprintk(1, "%s(ch#%d)\n", __func__, ch->nr);
 
-	del_timer_sync(&ch->timeout);
+	del_timer(&ch->timeout);
 	sc0710_dma_channels_stop(dev);
 	sc0710_return_all_buffers(ch, VB2_BUF_STATE_ERROR);
 }
@@ -489,8 +489,6 @@ static const struct vb2_ops sc0710_video_qops =
 	.buf_queue       = sc0710_buf_queue,
 	.start_streaming = sc0710_start_streaming,
 	.stop_streaming  = sc0710_stop_streaming,
-	.wait_prepare    = vb2_ops_wait_prepare,
-	.wait_finish     = vb2_ops_wait_finish,
 };
 
 static int sc0710_video_open(struct file *file)
@@ -510,7 +508,7 @@ static int sc0710_video_open(struct file *file)
 	fh->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	v4l2_fh_init(&fh->fh, vdev);
 	file->private_data = fh;
-	v4l2_fh_add(&fh->fh);
+	v4l2_fh_add(&fh->fh, file);
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
 	init_timer(&ch->timeout);
@@ -546,7 +544,7 @@ static int sc0710_video_release(struct file *file)
 	if (last_user)
 		vb2_queue_release(&ch->vb2_queue);
 
-	v4l2_fh_del(&fh->fh);
+	v4l2_fh_del(&fh->fh, file);
 	v4l2_fh_exit(&fh->fh);
 	file->private_data = NULL;
 	kfree(fh);
@@ -605,7 +603,7 @@ static void sc0710_vid_timeout(unsigned long data)
 #else
 static void sc0710_vid_timeout(struct timer_list *t)
 {
-	struct sc0710_dma_channel *ch = from_timer(ch, t, timeout);
+	struct sc0710_dma_channel *ch = container_of(t, struct sc0710_dma_channel, timeout);
 #endif
 	struct sc0710_dev *dev = ch->dev;
 	struct sc0710_buffer *buf;
