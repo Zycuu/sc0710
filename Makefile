@@ -9,11 +9,29 @@ obj-m += sc0710.o
 
 TARFILES = Makefile *.h *.c *.txt *.md
 
-KVERSION = $(shell uname -r)
-all:
-	make -C /lib/modules/$(KVERSION)/build M=$(PWD) modules
+KVERSION ?= $(shell uname -r)
+KDIR ?= /lib/modules/$(KVERSION)/build
+KBUILD_FLAGS ?=
+
+all: modules
+
+modules:
+	$(MAKE) -C $(KDIR) M=$(CURDIR) $(KBUILD_FLAGS) modules
+
 clean:
-	make -C /lib/modules/$(KVERSION)/build M=$(PWD) clean
+	$(MAKE) -C $(KDIR) M=$(CURDIR) $(KBUILD_FLAGS) clean
+
+llvm:
+	$(MAKE) KBUILD_FLAGS="LLVM=1" modules
+
+clean-llvm:
+	$(MAKE) KBUILD_FLAGS="LLVM=1" clean
+
+cachyos:
+	$(MAKE) KBUILD_FLAGS="LLVM=1" modules
+
+clean-cachyos:
+	$(MAKE) KBUILD_FLAGS="LLVM=1" clean
 
 load:	all
 	sudo dmesg -c >/dev/null
