@@ -19,6 +19,7 @@
  */
 
 #include "sc0710.h"
+#include <linux/vmalloc.h>
 
 static unsigned int audio_debug = 2;
 module_param(audio_debug, int, 0644);
@@ -29,48 +30,55 @@ MODULE_PARM_DESC(audio_debug, "enable debug messages [audio]");
 		printk(KERN_DEBUG "%s/0: " fmt, dev->name, ## arg);\
 	} while (0)
 
+static snd_pcm_uframes_t audio_period_ptr[SC0710_MAXBOARDS];
+static bool audio_capturing[SC0710_MAXBOARDS];
+
+static unsigned int sc0710_audio_slot(struct sc0710_audio_dev *chip)
+{
+	if (chip && chip->dev && chip->dev->nr >= 0 && chip->dev->nr < SC0710_MAXBOARDS)
+		return chip->dev->nr;
+
+	return 0;
+}
+
 int sc0710_audio_deliver_samples(struct sc0710_dev *dev, struct sc0710_dma_channel *ch,
 	const u8 *buf, int bitdepth, int strideBytes, int channels, int samplesPerChannel)
 {
 	struct sc0710_audio_dev *chip;
 	struct snd_pcm_substream *substream;
 	struct snd_pcm_runtime *runtime;
-	u8 *ptr = (u8 *)buf;
+	const u8 *ptr = buf;
 	u8 *dst;
+	unsigned int slot;
+	bool elapsed = false;
 	int i;
 	
 	if (channels != 2)
-		return -1;
+		return -EINVAL;
 	if (bitdepth != 16)
-		return -1;
+		return -EINVAL;
 	if (samplesPerChannel <= 0)
-		return -1;
+		return -EINVAL;
 
 	chip = ch->audio_dev;
-	if (!chip) {
-		printk("%s() audio chip is NULL \n", __func__);
-		return -1;
-	}
+	if (!chip)
+		return 0;
+
+	slot = sc0710_audio_slot(chip);
+	if (!audio_capturing[slot])
+		return 0;
 
 	substream = chip->substream;
-	if (!substream) {
-		printk("%s() audio capture substream is NULL\n", __func__);
-		return -1;
-	}
+	if (!substream)
+		return 0;
 
 	runtime = substream->runtime;
-	if (!runtime) {
-		printk("%s() audio capture runtime is NULL\n", __func__);
-		return -1;
-	}
-	if (!runtime->dma_area) {
-		printk("%s() audio capture runtime->dma_area is NULL\n", __func__);
-		return -1;
-	}
-	if (!runtime->buffer_size) {
-		printk("%s() audio capture runtime->buffer_size is zero\n", __func__);
-		return -1;
-	}
+	if (!runtime)
+		return 0;
+	if (!runtime->dma_area)
+		return 0;
+	if (!runtime->buffer_size)
+		return 0;
 
 #if 0
 	dprintk(1, "%s() wrote %d samples stride %d\n", __func__, samplesPerChannel, strideBytes);
@@ -87,18 +95,19 @@ int sc0710_audio_deliver_samples(struct sc0710_dev *dev, struct sc0710_dma_chann
 	 * Push only L1/R1 into the sound system.
 	 */
 
-	dst = (u8 *)runtime->dma_area + (chip->buffer_ptr * 4);
+	if (chip->buffer_ptr >= runtime->buffer_size)
+		chip->buffer_ptr = 0;
+	dst = (u8 *)runtime->dma_area + frames_to_bytes(runtime, chip->buffer_ptr);
 
 	for (i = 0; i < samplesPerChannel; i++) {
 
 		/* Make sure we can fit a left and right sample in. */
-		if (chip->buffer_ptr == runtime->buffer_size) {
+		if (chip->buffer_ptr >= runtime->buffer_size) {
 			dst = (u8 *)runtime->dma_area;
 			chip->buffer_ptr = 0;
 		} else
 		if (chip->buffer_ptr + 1 > runtime->buffer_size) {
-			printk("%s() overflow\n", __func__);
-			return -1;
+			return -EPIPE;
 		}
 
 		/* TODO: Do this in dwords, its faster. */
@@ -117,12 +126,16 @@ int sc0710_audio_deliver_samples(struct sc0710_dev *dev, struct sc0710_dma_chann
 
 		ptr += strideBytes;
 		chip->buffer_ptr++;
+		audio_period_ptr[slot]++;
+
+		if (runtime->period_size && audio_period_ptr[slot] >= runtime->period_size) {
+			audio_period_ptr[slot] = 0;
+			elapsed = true;
+		}
 	}
 
-	//snd_pcm_stream_lock(substream);
-	//snd_pcm_stream_unlock(substream);
-
-	snd_pcm_period_elapsed(substream);
+	if (elapsed)
+		snd_pcm_period_elapsed(substream);
 
 	return 0; /* Success */
 }
@@ -151,6 +164,7 @@ static int snd_sc0710_capture_open(struct snd_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct sc0710_dev *dev = chip->dev;
 	struct sc0710_dma_channel *ch = &dev->channel[1];
+	unsigned int slot;
 
 	dprintk(1, "%s()\n", __func__);
 
@@ -163,6 +177,10 @@ static int snd_sc0710_capture_open(struct snd_pcm_substream *substream)
 		return -ENODEV;
 	}
 
+	slot = sc0710_audio_slot(chip);
+	audio_capturing[slot] = false;
+	audio_period_ptr[slot] = 0;
+	chip->buffer_ptr = 0;
 	chip->substream = substream;
 
 	runtime->private_data = chip;
@@ -177,10 +195,13 @@ static int snd_sc0710_pcm_close(struct snd_pcm_substream *substream)
 {
 	struct sc0710_audio_dev *chip = snd_pcm_substream_chip(substream);
 	struct sc0710_dev *dev = chip->dev;
+	unsigned int slot = sc0710_audio_slot(chip);
 
 	dprintk(1, "%s()\n", __func__);
 
-	/* Stop the hardware */
+	audio_capturing[slot] = false;
+	audio_period_ptr[slot] = 0;
+	chip->substream = NULL;
 
 	return 0;
 }
@@ -197,16 +218,18 @@ static int snd_sc0710_hw_capture_params(struct snd_pcm_substream *substream,
 	dprintk(1, "%s() buffer_bytes %d\n", __func__, size);
 
 	if (runtime->dma_area) {
-		if (runtime->dma_bytes > size)
+		if (runtime->dma_bytes >= size)
 			return 0;
-		kfree(runtime->dma_area);
+		vfree(runtime->dma_area);
+		runtime->dma_area = NULL;
+		runtime->dma_bytes = 0;
 	}
-	runtime->dma_area = kzalloc(size, GFP_KERNEL);
+
+	runtime->dma_area = vzalloc(size);
 	if (!runtime->dma_area)
 		return -ENOMEM;
-	else
-		runtime->dma_bytes = size;
 
+	runtime->dma_bytes = size;
 	return 0; /* Success */
 }
 
@@ -214,11 +237,20 @@ static int snd_sc0710_hw_capture_free(struct snd_pcm_substream *substream)
 {
 	struct sc0710_audio_dev *chip = snd_pcm_substream_chip(substream);
 	struct sc0710_dev *dev = chip->dev;
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	unsigned int slot = sc0710_audio_slot(chip);
 	//struct sc0710_dma_channel *ch = &dev->channel[1];
 
 	dprintk(1, "%s() rate = %d\n", __func__, substream->runtime->rate);
 
-	/* Stop the stream */
+	audio_capturing[slot] = false;
+	audio_period_ptr[slot] = 0;
+
+	if (runtime && runtime->dma_area) {
+		vfree(runtime->dma_area);
+		runtime->dma_area = NULL;
+		runtime->dma_bytes = 0;
+	}
 
 	return 0;
 }
@@ -227,11 +259,13 @@ static int snd_sc0710_prepare(struct snd_pcm_substream *substream)
 {
 	struct sc0710_audio_dev *chip = snd_pcm_substream_chip(substream);
 	struct sc0710_dev *dev = chip->dev;
+	unsigned int slot = sc0710_audio_slot(chip);
 	//struct sc0710_dma_channel *ch = &dev->channel[1];
 
 	dprintk(1, "%s() requested rate = %d\n", __func__, substream->runtime->rate);
 
 	chip->buffer_ptr = 0;
+	audio_period_ptr[slot] = 0;
 
 	if (substream->runtime->rate != 48000) {
 		dprintk(1, "%s() audio rate mismatch (%u vs %u)\n", __func__, substream->runtime->rate, 48000);
@@ -247,16 +281,21 @@ static int snd_sc0710_capture_trigger(struct snd_pcm_substream *substream, int c
 {
 	struct sc0710_audio_dev *chip = snd_pcm_substream_chip(substream);
 	struct sc0710_dev *dev = chip->dev;
+	unsigned int slot = sc0710_audio_slot(chip);
 
 	dprintk(1, "%s() cmd %d\n", __func__, cmd);
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
-		/* Start h/w */
+	case SNDRV_PCM_TRIGGER_RESUME:
+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		audio_capturing[slot] = true;
 		return 0;
 
 	case SNDRV_PCM_TRIGGER_STOP:
-		/* Stop h/w */
+	case SNDRV_PCM_TRIGGER_SUSPEND:
+	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+		audio_capturing[slot] = false;
 		return 0;
 
 	default:
@@ -275,8 +314,14 @@ static snd_pcm_uframes_t snd_sc0710_capture_pointer(struct snd_pcm_substream
 static struct page *snd_pcm_pd_get_page(struct snd_pcm_substream *subs,
 					unsigned long offset)
 {
-	void *pageptr = subs->runtime->dma_area + offset;
-	printk("%s()\n", __func__);
+	void *pageptr;
+
+	if (!subs || !subs->runtime || !subs->runtime->dma_area)
+		return NULL;
+	if (offset >= subs->runtime->dma_bytes)
+		return NULL;
+
+	pageptr = subs->runtime->dma_area + offset;
 	return vmalloc_to_page(pageptr);
 }
 
@@ -340,6 +385,7 @@ int sc0710_audio_register(struct sc0710_dev *dev)
 	 */
 	struct sc0710_dma_channel *channel = &dev->channel[1];
 	int err;
+	unsigned int slot;
 
 	err = snd_card_new(&dev->pci->dev, SNDRV_DEFAULT_IDX1, SNDRV_DEFAULT_STR1,
 			      THIS_MODULE, sizeof(struct sc0710_audio_dev),
@@ -350,7 +396,12 @@ int sc0710_audio_register(struct sc0710_dev *dev)
 	chip = (struct sc0710_audio_dev *)card->private_data;
 	chip->card = card;
 	chip->dev = dev;
+	chip->substream = NULL;
 	chip->buffer_ptr = 0;
+
+	slot = sc0710_audio_slot(chip);
+	audio_capturing[slot] = false;
+	audio_period_ptr[slot] = 0;
 
 	err = snd_sc0710_pcm(chip, 0, "sc0710 HDMI");
 	if (err < 0)

@@ -47,11 +47,10 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-fh.h>
 #include <media/videobuf2-v4l2.h>
-#include <media/videobuf2-dma-sg.h>
+#include <media/videobuf2-vmalloc.h>
 #endif
 #include <media/tuner.h>
 #include <media/tveeprom.h>
-#include <media/videobuf-vmalloc.h>
 #include <media/rc-core.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -119,10 +118,8 @@ struct sc0710_things_per_second
 /* buffer for one video frame */
 struct sc0710_buffer
 {
-	/* common v4l buffer stuff -- must be first */
-	struct videobuf_buffer vb;
-
-	/* sc0710 specific */
+	struct vb2_v4l2_buffer vb;
+	struct list_head list;
 	const struct sc0710_format *fmt;
 };
 
@@ -358,7 +355,6 @@ struct sc0710_fh
 	struct sc0710_dma_channel *ch;
 	unsigned int               resources;
 	enum v4l2_buf_type         type;
-	struct videobuf_queue      vidq;
 };
 
 /* ----------------------------------------------------------- */

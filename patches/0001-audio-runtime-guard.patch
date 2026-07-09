@@ -1,0 +1,26 @@
+# Audio runtime guard patch status
+
+This patch file was originally added as a planning artifact.
+
+The audio hardening work has now been applied directly to:
+
+```text
+sc0710-audio.c
+```
+
+Do not apply this file with `git am`.
+
+## Applied direction
+
+The applied code now:
+
+- Tracks whether ALSA capture is actively running.
+- Silently ignores DMA audio delivery when no PCM capture stream is active.
+- Avoids noisy kernel log spam for inactive, missing, or not yet prepared PCM runtime state.
+- Tracks ALSA period boundaries before calling `snd_pcm_period_elapsed()`.
+- Uses `vzalloc()` and `vfree()` for the PCM DMA area so the existing `.page` callback can use `vmalloc_to_page()` safely.
+- Resets capture state on close, hardware free, stop, suspend, and pause.
+
+## Why this is a note instead of a patch now
+
+The original patch proposal modified `sc0710.h`. The applied implementation keeps the public audio device structure unchanged and stores the new capture state in `sc0710-audio.c` static per-board arrays. That keeps the audio patch smaller while the larger videobuf2 port is still pending.

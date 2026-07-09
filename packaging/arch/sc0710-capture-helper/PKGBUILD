@@ -1,0 +1,19 @@
+# Maintainer: local
+pkgname=sc0710-capture-helper
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="User space capture helper for the sc0710 Elgato 4K60 Pro Mk.2 driver"
+arch=('any')
+url="https://github.com/Zycuu/sc0710"
+license=('GPL')
+depends=('python' 'ffmpeg' 'v4l-utils' 'alsa-utils')
+source=(
+  "sc0710-capture.py"
+  "sc0710-capture.desktop"
+)
+sha256sums=('SKIP' 'SKIP')
+
+package() {
+  install -Dm755 "$srcdir/sc0710-capture.py" "$pkgdir/usr/bin/sc0710-capture"
+  install -Dm644 "$srcdir/sc0710-capture.desktop" "$pkgdir/usr/share/applications/sc0710-capture.desktop"
+}
